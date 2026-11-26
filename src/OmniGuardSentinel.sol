@@ -240,6 +240,9 @@ contract OmniGuardSentinel is AbstractPausableReactive {
 
     function _handleOrderRegistered(LogRecord calldata log) internal {
         uint256 orderId = log.topic_1;
+        if (trackedOrders[orderId].active) {
+            return;
+        }
         address trader = address(uint160(log.topic_2));
         (uint256 positionAmount, uint256 triggerPriceD8, bool isStopLoss, ) =
             abi.decode(log.data, (uint256, uint256, bool, uint256));
