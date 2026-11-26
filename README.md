@@ -43,7 +43,7 @@ flowchart LR
 
 ## Deployed Contracts & End-to-End Verification Log
 
-> Status: Local 3-chain Foundry test suite **10/10 passing**. Live testnet deployment pending free testnet gas funding (`Base Sepolia ETH` + `Unichain Sepolia ETH` + Lasna `lREACT` faucet `0x2afaFD298b23b62760711756088F75B7409f5967`).
+> Status: Local 3-chain Foundry unit + fuzz test suite **16/16 passing** (`10` end-to-end integration tests + `5 × 256`-run fuzz property tests + idempotency check, `0` warnings). Live testnet deployment pending free testnet gas funding (`Base Sepolia ETH` + `Unichain Sepolia ETH` + Lasna `lREACT` faucet `0x2afaFD298b23b62760711756088F75B7409f5967`).
 
 | Component | Chain | Contract Address | Verification / E2E TX Hash |
 |---|---|---|---|
