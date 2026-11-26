@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.29;
 
-import {AbstractCallback} from "reactive-lib/abstract-base/AbstractCallback.sol";
+import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
+import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
 import {OmniGuardTypes} from "./OmniGuardTypes.sol";
 
 /// @title OmniGuardVault
@@ -40,10 +41,10 @@ contract OmniGuardVault is AbstractCallback {
     mapping(bytes32 => bool) public processedIncidents;
     OmniGuardTypes.CallbackReceipt[] public callbackHistory;
 
-    uint256 public totalCallbacks;
-    uint256 public totalLatencySeconds;
-    uint256 public minLatencySeconds = type(uint256).max;
-    uint256 public maxLatencySeconds;
+    uint64 public totalCallbacks;
+    uint64 public totalLatencySeconds;
+    uint64 public minLatencySeconds = type(uint64).max;
+    uint64 public maxLatencySeconds;
 
     event SwapExecuted(
         address indexed vault,
@@ -103,9 +104,17 @@ contract OmniGuardVault is AbstractCallback {
         _;
     }
 
-    /// @param _callbackProxy Reactive Network Callback Proxy on Base Sepolia (0x476F44b11F5C942c58f4c8E3d0300E5710743585)
-    constructor(address _callbackProxy) AbstractCallback(_callbackProxy) payable {
+    /// @param _callbackProxy Reactive Omni Callback Proxy on Base Sepolia (0x476F44b11F5C942c58f4c8E3d0300E5710743585)
+    /// @param _callbackSender Authorized OmniGuardSentinel contract deployed on Reactive Lasna (5318007)
+    constructor(address _callbackProxy, address _callbackSender)
+        AbstractCallback(IPayable(payable(_callbackProxy)), _callbackSender)
+        payable
+    {
         owner = msg.sender;
+    }
+
+    function coverDebt() external {
+        _coverDebt();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -170,15 +179,15 @@ contract OmniGuardVault is AbstractCallback {
                     REACTIVE NETWORK CALLBACKS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Authenticated Reactive callback tripping the emergency circuit breaker and tightening slippage cap.
-    /// @param rvmId Overwritten by Reactive Network with the authentic Reactive VM deployer ID.
+    /// @notice Authenticated Reactive Omni callback tripping the emergency circuit breaker and tightening slippage cap.
+    /// @param reactiveSender Overwritten by Reactive Omni Callback Proxy with the authentic Reactive contract address.
     function executeCircuitBreaker(
-        address rvmId,
+        address reactiveSender,
         uint8 reasonCode,
         uint256 metricValue,
         uint256 originTimestamp,
         bytes32 incidentId
-    ) external authorizedSenderOnly rvmIdOnly(rvmId) {
+    ) external onlyServiceProvider onlyCallbackSender(reactiveSender) {
         if (processedIncidents[incidentId]) revert IncidentAlreadyProcessed(incidentId);
         processedIncidents[incidentId] = true;
 
@@ -191,15 +200,15 @@ contract OmniGuardVault is AbstractCallback {
         emit CircuitBreakerExecuted(incidentId, reasonCode, metricValue, originTimestamp, block.timestamp, latency);
     }
 
-    /// @notice Authenticated Reactive callback executing a keeper-less stop-loss or take-profit order.
-    /// @param rvmId Overwritten by Reactive Network with the authentic Reactive VM deployer ID.
+    /// @notice Authenticated Reactive Omni callback executing a keeper-less stop-loss or take-profit order.
+    /// @param reactiveSender Overwritten by Reactive Omni Callback Proxy with the authentic Reactive contract address.
     function executeOrder(
-        address rvmId,
+        address reactiveSender,
         uint256 orderId,
         uint256 executionPriceD8,
         uint256 originTimestamp,
         bytes32 incidentId
-    ) external authorizedSenderOnly rvmIdOnly(rvmId) {
+    ) external onlyServiceProvider onlyCallbackSender(reactiveSender) {
         PositionOrder storage ord = orders[orderId];
         if (!ord.active) revert OrderNotActive(orderId);
         if (processedIncidents[incidentId]) revert IncidentAlreadyProcessed(incidentId);
@@ -248,20 +257,21 @@ contract OmniGuardVault is AbstractCallback {
     ) internal returns (uint256 latency) {
         latency = block.timestamp >= originTimestamp ? block.timestamp - originTimestamp : 0;
 
+        uint64 lat64 = uint64(latency);
         totalCallbacks += 1;
-        totalLatencySeconds += latency;
-        if (latency < minLatencySeconds) minLatencySeconds = latency;
-        if (latency > maxLatencySeconds) maxLatencySeconds = latency;
+        totalLatencySeconds += lat64;
+        if (lat64 < minLatencySeconds) minLatencySeconds = lat64;
+        if (lat64 > maxLatencySeconds) maxLatencySeconds = lat64;
 
         callbackHistory.push(
             OmniGuardTypes.CallbackReceipt({
                 incidentId: incidentId,
+                originTimestamp: uint64(originTimestamp),
+                callbackTimestamp: uint64(block.timestamp),
+                latencySeconds: lat64,
+                callbackBlock: uint64(block.number),
                 reasonCode: reasonCode,
-                metricValue: metricValue,
-                originTimestamp: originTimestamp,
-                callbackTimestamp: block.timestamp,
-                latencySeconds: latency,
-                callbackBlock: block.number
+                metricValue: uint128(metricValue)
             })
         );
     }

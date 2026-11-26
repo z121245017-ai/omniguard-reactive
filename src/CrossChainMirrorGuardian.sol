@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.29;
 
-import {AbstractCallback} from "reactive-lib/abstract-base/AbstractCallback.sol";
+import {IPayable} from "reactive-lib-omni/interfaces/IPayable.sol";
+import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
 import {OmniGuardTypes} from "./OmniGuardTypes.sol";
 
 /// @title CrossChainMirrorGuardian
@@ -23,10 +24,10 @@ contract CrossChainMirrorGuardian is AbstractCallback {
     mapping(uint256 => uint256) public hedgedOrderPriceD8;
     OmniGuardTypes.CallbackReceipt[] public mirrorHistory;
 
-    uint256 public totalCallbacks;
-    uint256 public totalLatencySeconds;
-    uint256 public minLatencySeconds = type(uint256).max;
-    uint256 public maxLatencySeconds;
+    uint64 public totalCallbacks;
+    uint64 public totalLatencySeconds;
+    uint64 public minLatencySeconds = type(uint64).max;
+    uint64 public maxLatencySeconds;
 
     event CrossChainBreakerTripped(
         bytes32 indexed incidentId,
@@ -54,20 +55,28 @@ contract CrossChainMirrorGuardian is AbstractCallback {
         _;
     }
 
-    /// @param _callbackProxy Reactive Network Callback Proxy on Unichain Sepolia (0x775c9B990ADe401060B78D0e98684eEf8d2466C1)
-    constructor(address _callbackProxy) AbstractCallback(_callbackProxy) payable {
+    /// @param _callbackProxy Reactive Omni Callback Proxy on Unichain Sepolia (0x775c9B990ADe401060B78D0e98684eEf8d2466C1)
+    /// @param _callbackSender Authorized OmniGuardSentinel contract deployed on Reactive Lasna (5318007)
+    constructor(address _callbackProxy, address _callbackSender)
+        AbstractCallback(IPayable(payable(_callbackProxy)), _callbackSender)
+        payable
+    {
         owner = msg.sender;
+    }
+
+    function coverDebt() external {
+        _coverDebt();
     }
 
     /// @notice Trips the cross-chain sister-vault circuit breaker on Unichain Sepolia.
     function tripCrossChainBreaker(
-        address rvmId,
+        address reactiveSender,
         address originVault,
         uint8 reasonCode,
         uint256 metricValue,
         uint256 originTimestamp,
         bytes32 incidentId
-    ) external authorizedSenderOnly rvmIdOnly(rvmId) {
+    ) external onlyServiceProvider onlyCallbackSender(reactiveSender) {
         if (processedIncidents[incidentId]) revert IncidentAlreadyProcessed(incidentId);
         processedIncidents[incidentId] = true;
 
@@ -89,12 +98,12 @@ contract CrossChainMirrorGuardian is AbstractCallback {
 
     /// @notice Records a parallel cross-chain hedge signal on Unichain Sepolia when a Base Sepolia stop-loss triggers.
     function recordHedgeSignal(
-        address rvmId,
+        address reactiveSender,
         uint256 orderId,
         uint256 executionPriceD8,
         uint256 originTimestamp,
         bytes32 incidentId
-    ) external authorizedSenderOnly rvmIdOnly(rvmId) {
+    ) external onlyServiceProvider onlyCallbackSender(reactiveSender) {
         if (processedIncidents[incidentId]) revert IncidentAlreadyProcessed(incidentId);
         processedIncidents[incidentId] = true;
 
@@ -143,20 +152,21 @@ contract CrossChainMirrorGuardian is AbstractCallback {
     ) internal returns (uint256 latency) {
         latency = block.timestamp >= originTimestamp ? block.timestamp - originTimestamp : 0;
 
+        uint64 lat64 = uint64(latency);
         totalCallbacks += 1;
-        totalLatencySeconds += latency;
-        if (latency < minLatencySeconds) minLatencySeconds = latency;
-        if (latency > maxLatencySeconds) maxLatencySeconds = latency;
+        totalLatencySeconds += lat64;
+        if (lat64 < minLatencySeconds) minLatencySeconds = lat64;
+        if (lat64 > maxLatencySeconds) maxLatencySeconds = lat64;
 
         mirrorHistory.push(
             OmniGuardTypes.CallbackReceipt({
                 incidentId: incidentId,
+                originTimestamp: uint64(originTimestamp),
+                callbackTimestamp: uint64(block.timestamp),
+                latencySeconds: lat64,
+                callbackBlock: uint64(block.number),
                 reasonCode: reasonCode,
-                metricValue: metricValue,
-                originTimestamp: originTimestamp,
-                callbackTimestamp: block.timestamp,
-                latencySeconds: latency,
-                callbackBlock: block.number
+                metricValue: uint128(metricValue)
             })
         );
     }

@@ -1,18 +1,23 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.29;
 
 import {Test, Vm} from "forge-std/Test.sol";
-import {IReactive} from "reactive-lib/interfaces/IReactive.sol";
+import {IReactive} from "reactive-lib-omni/interfaces/IReactive.sol";
+import {AbstractPayer} from "reactive-lib-omni/base/AbstractPayer.sol";
+import {AbstractCallback} from "reactive-lib-omni/base/AbstractCallback.sol";
 import {OmniGuardTypes} from "../src/OmniGuardTypes.sol";
 import {OmniGuardVault} from "../src/OmniGuardVault.sol";
 import {CrossChainMirrorGuardian} from "../src/CrossChainMirrorGuardian.sol";
 import {OmniGuardSentinel} from "../src/OmniGuardSentinel.sol";
+import {MockReactiveSystem} from "./MockReactiveSystem.sol";
 
-/// @notice Fuzz & property-based verification suite for OmniGuard's 3-chain Reactive Omni architecture.
+/// @notice Fuzz & property-based verification suite for OmniGuard's native Reactive Omni 3-chain architecture.
 contract OmniGuardFuzzTest is Test {
     uint256 internal constant BASE_SEPOLIA_CHAIN_ID = 84532;
     uint256 internal constant UNICHAIN_SEPOLIA_CHAIN_ID = 1301;
-    bytes32 internal constant CALLBACK_EVENT_SIG = keccak256("Callback(uint256,address,uint64,bytes)");
+    address internal constant OMNI_SYSTEM = 0x8888888888888888888888888888888888888888;
+    bytes32 internal constant MOCK_CB_EVENT_SIG =
+        keccak256("MockCallbackRequested(address,uint256,address,uint64,bytes)");
 
     address internal baseCallbackProxy = makeAddr("baseCallbackProxy");
     address internal unichainCallbackProxy = makeAddr("unichainCallbackProxy");
@@ -24,8 +29,14 @@ contract OmniGuardFuzzTest is Test {
 
     function setUp() public {
         vm.warp(1_764_100_000);
-        vault = new OmniGuardVault(baseCallbackProxy);
-        mirror = new CrossChainMirrorGuardian(unichainCallbackProxy);
+        MockReactiveSystem impl = new MockReactiveSystem();
+        vm.etch(OMNI_SYSTEM, address(impl).code);
+
+        uint64 curNonce = vm.getNonce(address(this));
+        address predictedSentinel = vm.computeCreateAddress(address(this), curNonce + 2);
+
+        vault = new OmniGuardVault(baseCallbackProxy, predictedSentinel);
+        mirror = new CrossChainMirrorGuardian(unichainCallbackProxy, predictedSentinel);
         sentinel = new OmniGuardSentinel(
             BASE_SEPOLIA_CHAIN_ID,
             UNICHAIN_SEPOLIA_CHAIN_ID,
@@ -78,10 +89,12 @@ contract OmniGuardFuzzTest is Test {
 
         vm.recordLogs();
         uint256 slId = vault.registerOrder(5 ether, slTrigger, true);
+        vm.prank(OMNI_SYSTEM);
         sentinel.react(_toLogRecord(vm.getRecordedLogs()[0], 10));
 
         vm.recordLogs();
         uint256 tpId = vault.registerOrder(5 ether, tpTrigger, false);
+        vm.prank(OMNI_SYSTEM);
         sentinel.react(_toLogRecord(vm.getRecordedLogs()[0], 11));
 
         assertEq(sentinel.getActiveOrdersCount(), 2);
@@ -151,7 +164,7 @@ contract OmniGuardFuzzTest is Test {
             vm.warp(originTs + lats[i]);
             bytes32 inc = keccak256(abi.encodePacked("lat", i, lats[i]));
             vm.prank(baseCallbackProxy);
-            vault.executeCircuitBreaker(address(this), 1, 500 + i, originTs, inc);
+            vault.executeCircuitBreaker(address(sentinel), 1, 500 + i, originTs, inc);
             vault.resetCircuitBreaker(200);
 
             sum += lats[i];
@@ -167,17 +180,17 @@ contract OmniGuardFuzzTest is Test {
         assertEq(st.avgLatencySeconds, sum / 3);
     }
 
-    function testFuzz_accessControlRejectsArbitraryCallers(address caller, address wrongRvm, bytes32 inc) public {
+    function testFuzz_accessControlRejectsArbitraryCallers(address caller, address wrongSender, bytes32 inc) public {
         vm.assume(caller != baseCallbackProxy && caller != unichainCallbackProxy && caller != address(this));
-        vm.assume(wrongRvm != address(this));
+        vm.assume(wrongSender != address(sentinel));
 
         vm.prank(caller);
-        vm.expectRevert("Authorized sender only");
-        vault.executeCircuitBreaker(address(this), 1, 500, vm.getBlockTimestamp(), inc);
+        vm.expectRevert(abi.encodeWithSelector(AbstractPayer.NotAuthorized.selector, caller, baseCallbackProxy));
+        vault.executeCircuitBreaker(address(sentinel), 1, 500, vm.getBlockTimestamp(), inc);
 
         vm.prank(baseCallbackProxy);
-        vm.expectRevert("Authorized RVM ID only");
-        vault.executeCircuitBreaker(wrongRvm, 1, 500, vm.getBlockTimestamp(), inc);
+        vm.expectRevert(abi.encodeWithSelector(AbstractCallback.CallbackNotAuthorized.selector, wrongSender, address(sentinel)));
+        vault.executeCircuitBreaker(wrongSender, 1, 500, vm.getBlockTimestamp(), inc);
 
         vm.prank(caller);
         vm.expectRevert(OmniGuardVault.UnauthorizedOwner.selector);
@@ -193,7 +206,9 @@ contract OmniGuardFuzzTest is Test {
         vault.registerOrder(1 ether, 2500e8, true);
         IReactive.LogRecord memory rec = _toLogRecord(vm.getRecordedLogs()[0], 99);
 
+        vm.prank(OMNI_SYSTEM);
         sentinel.react(rec);
+        vm.prank(OMNI_SYSTEM);
         sentinel.react(rec);
         assertEq(sentinel.getActiveOrdersCount(), 1, "duplicate registration log must be idempotent");
     }
@@ -206,18 +221,18 @@ contract OmniGuardFuzzTest is Test {
 
     function _toLogRecord(Vm.Log memory entry, uint256 txSeed) internal view returns (IReactive.LogRecord memory rec) {
         rec = IReactive.LogRecord({
-            chain_id: BASE_SEPOLIA_CHAIN_ID,
-            _contract: entry.emitter,
-            topic_0: entry.topics.length > 0 ? uint256(entry.topics[0]) : 0,
-            topic_1: entry.topics.length > 1 ? uint256(entry.topics[1]) : 0,
-            topic_2: entry.topics.length > 2 ? uint256(entry.topics[2]) : 0,
-            topic_3: entry.topics.length > 3 ? uint256(entry.topics[3]) : 0,
+            chainId: BASE_SEPOLIA_CHAIN_ID,
+            contractAddress: entry.emitter,
+            topic0: entry.topics.length > 0 ? uint256(entry.topics[0]) : 0,
+            topic1: entry.topics.length > 1 ? uint256(entry.topics[1]) : 0,
+            topic2: entry.topics.length > 2 ? uint256(entry.topics[2]) : 0,
+            topic3: entry.topics.length > 3 ? uint256(entry.topics[3]) : 0,
             data: entry.data,
-            block_number: block.number,
-            op_code: 0,
-            block_hash: uint256(keccak256(abi.encodePacked(block.number))),
-            tx_hash: uint256(keccak256(abi.encodePacked(txSeed, vm.getBlockTimestamp()))),
-            log_index: 0
+            blockNumber: block.number,
+            opCode: entry.topics.length,
+            blockHash: uint256(keccak256(abi.encodePacked(block.number))),
+            txHash: uint256(keccak256(abi.encodePacked(txSeed, vm.getBlockTimestamp()))),
+            logIndex: 0
         });
     }
 
@@ -226,6 +241,7 @@ contract OmniGuardFuzzTest is Test {
         uint256 simulatedLatencySeconds
     ) internal returns (uint256 delivered) {
         vm.recordLogs();
+        vm.prank(OMNI_SYSTEM);
         sentinel.react(rec);
         Vm.Log[] memory reactiveLogs = vm.getRecordedLogs();
 
@@ -234,11 +250,12 @@ contract OmniGuardFuzzTest is Test {
         }
 
         for (uint256 i = 0; i < reactiveLogs.length; ++i) {
-            if (reactiveLogs[i].topics[0] == CALLBACK_EVENT_SIG) {
-                uint256 destChainId = uint256(reactiveLogs[i].topics[1]);
-                address destContract = address(uint160(uint256(reactiveLogs[i].topics[2])));
-                bytes memory payload = abi.decode(reactiveLogs[i].data, (bytes));
-                bytes memory injectedPayload = _injectRvmId(payload, address(this));
+            if (reactiveLogs[i].topics[0] == MOCK_CB_EVENT_SIG) {
+                address reactiveContract = address(uint160(uint256(reactiveLogs[i].topics[1])));
+                uint256 destChainId = uint256(reactiveLogs[i].topics[2]);
+                address destContract = address(uint160(uint256(reactiveLogs[i].topics[3])));
+                (, bytes memory payload) = abi.decode(reactiveLogs[i].data, (uint64, bytes));
+                bytes memory injectedPayload = _injectSender(payload, reactiveContract);
                 address proxy = destChainId == BASE_SEPOLIA_CHAIN_ID ? baseCallbackProxy : unichainCallbackProxy;
 
                 vm.prank(proxy);
@@ -249,11 +266,11 @@ contract OmniGuardFuzzTest is Test {
         }
     }
 
-    function _injectRvmId(bytes memory payload, address rvmId) internal pure returns (bytes memory out) {
+    function _injectSender(bytes memory payload, address sender) internal pure returns (bytes memory out) {
         require(payload.length >= 36, "payload too short");
         out = payload;
         assembly {
-            mstore(add(out, 36), rvmId)
+            mstore(add(out, 36), sender)
         }
     }
 }

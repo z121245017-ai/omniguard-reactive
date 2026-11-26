@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.29;
 
 /// @title OmniGuardTypes
 /// @notice Shared event signatures, reason codes, and telemetry structs across Base Sepolia,
@@ -26,12 +26,12 @@ library OmniGuardTypes {
 
     struct CallbackReceipt {
         bytes32 incidentId;
+        uint64 originTimestamp;
+        uint64 callbackTimestamp;
+        uint64 latencySeconds;
+        uint64 callbackBlock;
         uint8 reasonCode;
-        uint256 metricValue;
-        uint256 originTimestamp;
-        uint256 callbackTimestamp;
-        uint256 latencySeconds;
-        uint256 callbackBlock;
+        uint128 metricValue;
     }
 
     struct LatencyStats {

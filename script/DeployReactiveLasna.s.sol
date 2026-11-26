@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.29;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {OmniGuardSentinel} from "../src/OmniGuardSentinel.sol";
@@ -15,7 +15,7 @@ contract DeployReactiveLasna is Script {
         uint256 pk = vm.envUint("PRIVATE_KEY");
         address originVault = vm.envAddress("BASE_SEPOLIA_VAULT");
         address mirrorGuardian = vm.envOr("UNICHAIN_SEPOLIA_MIRROR", address(0));
-        uint256 fundingWei = vm.envOr("LASNA_FUNDING_WEI", uint256(0.5 ether)); // 0.5 lREACT
+        uint256 fundingWei = vm.envOr("LASNA_FUNDING_WEI", uint256(0.25 ether)); // 0.25 lREACT
 
         vm.startBroadcast(pk);
         sentinel = new OmniGuardSentinel{value: fundingWei}(
